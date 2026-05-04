@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+
+##############################
+# Stage 1: Fetch source code #
+##############################
+FROM alpine:3.20 AS source
+
+ARG VOTING_APP_REPO=https://github.com/guycalledavinash/voting-app.git
+ARG VOTING_APP_REF=main
+
+RUN apk add --no-cache git
+WORKDIR /src
+RUN git clone --depth 1 --branch "${VOTING_APP_REF}" "${VOTING_APP_REPO}" app
+
+###########################
+# Stage 2: Build artifacts #
+###########################
+FROM node:20-alpine AS build
+
+WORKDIR /app
+COPY --from=source /src/app ./
+
+RUN if [ -f package-lock.json ]; then npm ci; \
+    elif [ -f npm-shrinkwrap.json ]; then npm ci; \
+    elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile; \
+    elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; \
+    else npm install; fi
+
+# Build when possible and normalize output into /out for runtime image.
+RUN set -eux; \
+    if npm run | grep -qE '^  build'; then npm run build; fi; \
+    mkdir -p /out; \
+    if [ -d /app/dist ]; then cp -a /app/dist/. /out/; \
+    elif [ -d /app/build ]; then cp -a /app/build/. /out/; \
+    else echo "No dist/ or build/ directory found after build." && exit 1; fi
+
+#########################################
+# Stage 3: Runtime image for static app #
+#########################################
+FROM nginx:1.27-alpine AS runtime
+
+COPY --from=build /out/ /usr/share/nginx/html/
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
